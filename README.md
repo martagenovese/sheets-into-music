@@ -1,53 +1,115 @@
 # Sheets Into Music
 
-Android-first Flutter starter for a fully local pipeline:
+Android-first Flutter app that analyzes sheet-music PDFs locally and plays detected notes.
 
-PDF sheet music → on-device OMR (AI/CV) → note events → audio playback.
+Pipeline:
 
-## Current status
+PDF -> Android PdfRenderer -> local CV note detection -> note events -> local audio playback
 
-- Flutter project scaffolded.
-- Android-focused starter UI added:
-  - pick a PDF,
-  - run analysis (mocked for now),
-  - play notes (mocked for now).
-- First real local Android step integrated:
-	- native `PdfRenderer` method channel reads PDF page count and first page size.
-- Starter code is intentionally structured so real engines can replace mocks.
+No server is required for the current implementation.
 
-## Why AI/CV is needed
+## Current state
 
-If the input is PDF sheet music (not MusicXML/MIDI), you need OMR.
-OMR is a computer-vision/AI task in practice.
+Implemented end-to-end on Android:
 
-## Free local options (no server)
+- Pick a PDF from device storage.
+- Analyze all pages on-device through a Kotlin method channel.
+- Build page previews and note-event timeline.
+- Render multi-page score preview in Flutter.
+- Draw note overlays and playback progress.
+- Auto-scroll to the page currently being played.
+- Play extracted notes with a native Android synth path.
 
-1. On-device model inference
-	- TensorFlow Lite (Android)
-	- ONNX Runtime Mobile
+Important: this is still a heuristic OMR pipeline, not a trained music model. Accuracy depends heavily on PDF quality.
 
-2. Computer vision helpers
-	- OpenCV for staff-line and symbol preprocessing
+## Tech stack
 
-3. Playback (local)
-	- MIDI generation + synth (for example FluidSynth-based integration)
+- Flutter (Dart) UI/app flow
+- Kotlin Android native channels for:
+	- PDF analysis and preview generation
+	- audio playback
+- file_picker for PDF selection
 
-## Suggested MVP scope
+Main channels:
 
-Start narrow for fast progress:
+- sheets_into_music/pdf
+- sheets_into_music/audio
 
-- single staff,
-- monophonic melody only,
-- clean printed PDFs,
-- basic note durations (quarter/half/eighth),
-- fixed tempo.
+## Project structure
 
-Then add chords, multi-staff, key signatures, dynamics, and articulation.
+- lib/src/ui: screens, widgets, visual overlays
+- lib/src/services: Flutter-side bridges for PDF analysis and playback
+- lib/src/models: note/page/result/status models
+- android/app/src/main/kotlin/.../MainActivity.kt: native analysis + audio implementation
 
-## Project milestones
+## Requirements
 
-1. Replace mock analyzer with real PDF→image rendering and preprocessing.
-2. Add on-device notehead/rest/stem detection model.
-3. Convert detections to timed notes.
-4. Generate MIDI and wire a local synth.
-5. Improve accuracy and add score-visual debug overlays.
+- Flutter SDK compatible with this project
+- Android Studio + Android SDK
+- ADB configured and device/emulator available
+- Android target with USB debugging or wireless debugging enabled
+
+## Run
+
+Install dependencies:
+
+```bash
+flutter pub get
+```
+
+List devices:
+
+```bash
+flutter devices
+```
+
+Run on a specific Android device:
+
+```bash
+flutter run -d <device_id>
+```
+
+Run tests:
+
+```bash
+flutter test
+```
+
+## How to use the app
+
+1. Tap Pick PDF and choose a sheet-music PDF.
+2. Tap Analyze.
+3. Inspect Warnings for per-page diagnostics and total analysis time.
+4. Tap Play to hear extracted notes and see page-following overlays.
+
+## Known limitations
+
+- Best results are with clean, digital sheet PDFs.
+- Photo-scans, low contrast, skew, or heavy text can reduce detection quality.
+- Rhythmic interpretation is simplified (fixed-duration style timeline in current implementation).
+- Note detection is capped and heuristic; complex notation may be missed.
+
+## Troubleshooting
+
+If analysis is very slow or returns few/no notes:
+
+- Prefer exported PDFs from notation software rather than camera scans.
+- Try fewer pages first to validate the pipeline quickly.
+- Check warning lines in-app:
+	- per-page analyzed size/time
+	- per-page detected note count
+	- total analysis time
+- If device connection drops during debug, re-run flutter run and test with a smaller PDF.
+
+If Android toolchain is not detected:
+
+- Verify adb devices lists your device.
+- Confirm platform-tools are on PATH.
+- Re-check USB/Wi-Fi debugging authorization on phone.
+
+## Next improvement targets
+
+- Replace heuristics with a stronger OMR model (TFLite/ONNX) on device.
+- Better text-vs-music discrimination.
+- More accurate timing/rhythm extraction.
+- MIDI export and richer instrument playback.

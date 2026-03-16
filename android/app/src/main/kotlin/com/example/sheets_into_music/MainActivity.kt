@@ -7,12 +7,16 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.max
@@ -24,6 +28,8 @@ import kotlin.math.sin
 class MainActivity : FlutterActivity() {
 	private val pdfChannelName = "sheets_into_music/pdf"
 	private val audioChannelName = "sheets_into_music/audio"
+	private val workerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+	private val mainHandler = Handler(Looper.getMainLooper())
 
 	private data class DetectedNote(
 		val x: Int,
@@ -56,10 +62,8 @@ class MainActivity : FlutterActivity() {
 							return@setMethodCallHandler
 						}
 
-						try {
-							result.success(analyzePdfBasic(pdfPath))
-						} catch (e: Exception) {
-							result.error("native_pdf_error", e.message, null)
+						runAsync(result, "native_pdf_error") {
+							analyzePdfBasic(pdfPath)
 						}
 					}
 
@@ -72,10 +76,8 @@ class MainActivity : FlutterActivity() {
 							return@setMethodCallHandler
 						}
 
-						try {
-							result.success(renderPdfPreview(pdfPath, maxWidth ?: 1400))
-						} catch (e: Exception) {
-							result.error("native_pdf_preview_error", e.message, null)
+						runAsync(result, "native_pdf_preview_error") {
+							renderPdfPreview(pdfPath, maxWidth ?: 1400)
 						}
 					}
 
@@ -95,17 +97,35 @@ class MainActivity : FlutterActivity() {
 							return@setMethodCallHandler
 						}
 
-						try {
+						runAsync(result, "native_audio_error") {
 							playNotes(notes)
-							result.success(true)
-						} catch (e: Exception) {
-							result.error("native_audio_error", e.message, null)
+							true
 						}
 					}
 
 					else -> result.notImplemented()
 				}
 			}
+	}
+
+	override fun onDestroy() {
+		super.onDestroy()
+		workerExecutor.shutdownNow()
+	}
+
+	private fun runAsync(
+		result: MethodChannel.Result,
+		errorCode: String,
+		block: () -> Any,
+	) {
+		workerExecutor.execute {
+			try {
+				val response = block()
+				mainHandler.post { result.success(response) }
+			} catch (e: Exception) {
+				mainHandler.post { result.error(errorCode, e.message, null) }
+			}
+		}
 	}
 
 	private fun analyzePdfBasic(pdfPath: String): Map<String, Any> {
@@ -121,6 +141,7 @@ class MainActivity : FlutterActivity() {
 		var firstPageHeight = 0
 		val warnings = mutableListOf<String>()
 		val notes = mutableListOf<Map<String, Any>>()
+		val previewPages = mutableListOf<Map<String, Any>>()
 
 		descriptor.use { pfd ->
 			PdfRenderer(pfd).use { renderer ->
@@ -137,49 +158,82 @@ class MainActivity : FlutterActivity() {
 								firstPageHeight = page.height
 							}
 
-							val scale = 2
-							val renderWidth = page.width * scale
-							val renderHeight = page.height * scale
+							val analysisScale = if (page.width <= 1000) 2 else 1
+							val renderWidth = (page.width * analysisScale).coerceAtMost(2200)
+							val renderHeight = (page.height * renderWidth.toDouble() / page.width.toDouble())
+								.roundToInt()
+								.coerceAtLeast(1)
 							val bitmap = Bitmap.createBitmap(
 								renderWidth,
 								renderHeight,
 								Bitmap.Config.ARGB_8888,
 							)
 
-							page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+							try {
+								page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
-							val detected = detectNotes(bitmap)
-							if (detected.isEmpty()) {
-								warnings.add(
-									"Page ${pageIndex + 1}: no note candidates detected."
-								)
-							}
-
-							var localMaxEnd = 0
-							for (note in detected) {
-								val adjustedStart = note.startMs + timelineOffsetMs
-								val end = adjustedStart + note.durationMs
-								if (end > localMaxEnd) {
-									localMaxEnd = end
+								val previewTargetWidth = min(1200, max(700, page.width * 2))
+								val previewScale = previewTargetWidth.toDouble() / page.width.toDouble()
+								val previewTargetHeight = max(1, (page.height * previewScale).roundToInt())
+								val previewBitmap = if (bitmap.width == previewTargetWidth && bitmap.height == previewTargetHeight) {
+									bitmap
+								} else {
+									Bitmap.createScaledBitmap(bitmap, previewTargetWidth, previewTargetHeight, true)
 								}
 
-								notes.add(
-									mapOf(
-										"pitch" to note.pitch,
-										"midi" to note.midi,
-										"startMs" to adjustedStart,
-										"durationMs" to note.durationMs,
-										"x" to note.x,
-										"y" to note.y,
-										"pageIndex" to pageIndex,
-									)
-								)
-							}
+								try {
+									ByteArrayOutputStream().use { output ->
+										previewBitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+										previewPages.add(
+											mapOf(
+												"pageIndex" to pageIndex,
+												"pngBytes" to output.toByteArray(),
+												"imageWidth" to previewTargetWidth,
+												"imageHeight" to previewTargetHeight,
+											)
+										)
+									}
+								} finally {
+									if (previewBitmap !== bitmap) {
+										previewBitmap.recycle()
+									}
+								}
 
-							timelineOffsetMs = if (localMaxEnd > timelineOffsetMs) {
-								localMaxEnd + 250
-							} else {
-								timelineOffsetMs + 250
+								val detected = detectNotes(bitmap)
+								if (detected.isEmpty()) {
+									warnings.add(
+										"Page ${pageIndex + 1}: no note candidates detected."
+									)
+								}
+
+								var localMaxEnd = 0
+								for (note in detected) {
+									val adjustedStart = note.startMs + timelineOffsetMs
+									val end = adjustedStart + note.durationMs
+									if (end > localMaxEnd) {
+										localMaxEnd = end
+									}
+
+									notes.add(
+										mapOf(
+											"pitch" to note.pitch,
+											"midi" to note.midi,
+											"startMs" to adjustedStart,
+											"durationMs" to note.durationMs,
+											"x" to note.x,
+											"y" to note.y,
+											"pageIndex" to pageIndex,
+										)
+									)
+								}
+
+								timelineOffsetMs = if (localMaxEnd > timelineOffsetMs) {
+									localMaxEnd + 250
+								} else {
+									timelineOffsetMs + 250
+								}
+							} finally {
+								bitmap.recycle()
 							}
 						}
 					}
@@ -190,6 +244,8 @@ class MainActivity : FlutterActivity() {
 		if (notes.isNotEmpty()) {
 			warnings.add("Detected ${notes.size} note candidates across $pageCount pages.")
 			warnings.add("Polyphony enabled: notes aligned on the same x-position share the same start time.")
+		} else {
+			warnings.add("Try a cleaner PDF export (not a photo scan) for better note detection.")
 		}
 
 		return mapOf(
@@ -197,6 +253,7 @@ class MainActivity : FlutterActivity() {
 			"firstPageWidth" to firstPageWidth,
 			"firstPageHeight" to firstPageHeight,
 			"notes" to notes,
+			"pages" to previewPages,
 			"warnings" to warnings,
 			"engine" to "android_pdf_renderer_basic_cv",
 		)
@@ -229,19 +286,23 @@ class MainActivity : FlutterActivity() {
 							Bitmap.Config.ARGB_8888,
 						)
 
-						page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+						try {
+							page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
-						val output = ByteArrayOutputStream()
-						bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
-
-						pages.add(
-							mapOf(
-								"pageIndex" to pageIndex,
-								"pngBytes" to output.toByteArray(),
-								"imageWidth" to targetWidth,
-								"imageHeight" to targetHeight,
-							)
-						)
+							ByteArrayOutputStream().use { output ->
+								bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+								pages.add(
+									mapOf(
+										"pageIndex" to pageIndex,
+										"pngBytes" to output.toByteArray(),
+										"imageWidth" to targetWidth,
+										"imageHeight" to targetHeight,
+									)
+								)
+							}
+						} finally {
+							bitmap.recycle()
+						}
 					}
 				}
 
@@ -257,14 +318,16 @@ class MainActivity : FlutterActivity() {
 		val height = bitmap.height
 		if (width <= 0 || height <= 0) return emptyList()
 
-		val threshold = 120
+		val threshold = adaptiveThreshold(bitmap)
 		val size = width * height
 		val dark = BooleanArray(size)
 		val rowCounts = IntArray(height)
+		val pixels = IntArray(size)
+		bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
 		for (y in 0 until height) {
 			for (x in 0 until width) {
-				val pixel = bitmap.getPixel(x, y)
+				val pixel = pixels[y * width + x]
 				val luma = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000
 				val isDark = luma < threshold
 				val idx = y * width + x
@@ -275,7 +338,9 @@ class MainActivity : FlutterActivity() {
 
 		val lineRows = mutableListOf<Int>()
 		var y = 0
-		val lineThreshold = (width * 0.45).roundToInt()
+		val sortedRowCounts = rowCounts.sorted()
+		val rowP95 = sortedRowCounts[(height * 0.95).roundToInt().coerceIn(0, height - 1)]
+		val lineThreshold = max((width * 0.15).roundToInt(), (rowP95 * 0.72).roundToInt())
 		while (y < height) {
 			if (rowCounts[y] >= lineThreshold) {
 				var end = y
@@ -318,8 +383,8 @@ class MainActivity : FlutterActivity() {
 				var maxX = xx
 				var minY = yy
 				var maxY = yy
-				var sumX = 0
-				var sumY = 0
+				var sumX = 0L
+				var sumY = 0L
 
 				while (queue.isNotEmpty()) {
 					val idx = queue.removeFirst()
@@ -327,8 +392,8 @@ class MainActivity : FlutterActivity() {
 					val cx = idx % width
 
 					area++
-					sumX += cx
-					sumY += cy
+					sumX += cx.toLong()
+					sumY += cy.toLong()
 					minX = min(minX, cx)
 					maxX = max(maxX, cx)
 					minY = min(minY, cy)
@@ -347,8 +412,8 @@ class MainActivity : FlutterActivity() {
 
 				val boxW = maxX - minX + 1
 				val boxH = maxY - minY + 1
-				val cx = sumX / area
-				val cy = sumY / area
+				val cx = (sumX / area.toLong()).toInt()
+				val cy = (sumY / area.toLong()).toInt()
 
 				if (rowCounts[cy] > (width * 0.78)) continue
 
@@ -452,6 +517,62 @@ class MainActivity : FlutterActivity() {
 		}
 
 		return withStart.take(128)
+	}
+
+	private fun adaptiveThreshold(bitmap: Bitmap): Int {
+		val width = bitmap.width
+		val height = bitmap.height
+		val sampleStepX = max(1, width / 240)
+		val sampleStepY = max(1, height / 240)
+		val histogram = IntArray(256)
+
+		var sampleCount = 0
+		var y = 0
+		while (y < height) {
+			var x = 0
+			while (x < width) {
+				val pixel = bitmap.getPixel(x, y)
+				val luma = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000
+				histogram[luma]++
+				sampleCount++
+				x += sampleStepX
+			}
+			y += sampleStepY
+		}
+
+		if (sampleCount <= 0) {
+			return 135
+		}
+
+		var sum = 0.0
+		for (i in 0..255) {
+			sum += i * histogram[i].toDouble()
+		}
+
+		var sumB = 0.0
+		var wB = 0
+		var bestVariance = -1.0
+		var threshold = 135
+
+		for (i in 0..255) {
+			wB += histogram[i]
+			if (wB == 0) continue
+
+			val wF = sampleCount - wB
+			if (wF == 0) break
+
+			sumB += i * histogram[i].toDouble()
+			val mB = sumB / wB
+			val mF = (sum - sumB) / wF
+			val between = wB.toDouble() * wF.toDouble() * (mB - mF).pow(2)
+
+			if (between > bestVariance) {
+				bestVariance = between
+				threshold = i
+			}
+		}
+
+		return threshold.coerceIn(85, 180)
 	}
 
 	private fun buildStaffModels(lineRows: List<Int>, imageHeight: Int): List<StaffModel> {
