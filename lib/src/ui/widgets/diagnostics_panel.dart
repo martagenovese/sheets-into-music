@@ -33,7 +33,7 @@ class DiagnosticsPanel extends StatelessWidget {
         ],
         const SizedBox(height: 12),
         const Text(
-          'Playback auto-scrolls through all pages and follows active notes.',
+          'Playback auto-scrolls through rendered PDF pages. Remote MusicXML results do not include note coordinates yet.',
         ),
       ],
     );

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:sheets_into_music/src/models/note_event.dart';
 import 'package:sheets_into_music/src/models/ocr_omr_result.dart';
@@ -21,7 +22,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final LocalOmrPipeline _pipeline = LocalOmrPipeline();
+  final OmrPipeline _pipeline = OmrPipeline();
   final LocalPlaybackEngine _playback = LocalPlaybackEngine();
   final ScrollController _scoreScrollController = ScrollController();
 
@@ -111,10 +112,11 @@ class _HomePageState extends State<HomePage> {
           );
         _status = PipelineStatus.analyzed;
       });
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('OMR analyze error: $e\n$st');
       setState(() {
         _status = PipelineStatus.error;
-        _error = e.toString();
+        _error = null;
       });
     }
   }
@@ -153,13 +155,14 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _status = PipelineStatus.analyzed;
       });
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('Playback error: $e\n$st');
       if (!mounted) {
         return;
       }
       setState(() {
         _status = PipelineStatus.error;
-        _error = e.toString();
+        _error = null;
       });
     } finally {
       stopwatch.stop();
@@ -202,7 +205,7 @@ class _HomePageState extends State<HomePage> {
       case PipelineStatus.fileReady:
         return 'PDF selected';
       case PipelineStatus.analyzing:
-        return 'Analyzing full PDF with local OMR...';
+        return 'Analyzing PDF pages with Hugging Face OMR...';
       case PipelineStatus.analyzed:
         return 'Analysis complete';
       case PipelineStatus.playing:
@@ -258,7 +261,7 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Sheets Into Music (Android starter)'),
+        title: const Text('Sheets Into Music'),
       ),
       body: SafeArea(
         child: Padding(

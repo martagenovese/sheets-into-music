@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.example.sheets_into_music"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

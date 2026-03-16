@@ -10,10 +10,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sheets_into_music/main.dart';
 
 void main() {
-  testWidgets('Android starter shell renders', (WidgetTester tester) async {
+  testWidgets('Main shell renders', (WidgetTester tester) async {
     await tester.pumpWidget(const SheetToSoundApp());
 
-    expect(find.text('Sheets Into Music (Android starter)'), findsOneWidget);
+    expect(find.text('Sheets Into Music'), findsOneWidget);
     expect(find.text('Pick PDF'), findsOneWidget);
     expect(find.text('Analyze'), findsOneWidget);
     expect(find.text('Play'), findsOneWidget);
